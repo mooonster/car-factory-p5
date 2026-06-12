@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>fábrica de autos en p5.js｜一台車的誕生</title>
+<meta name="description" content="以 p5.js 像素取樣渲染管線（馬賽克/像素藝術/點陣 glitch/ASCII）呈現一台車的製造過程。單一 HTML 生成式動畫。">
+<style>
+  html,body{margin:0;padding:0;background:#000;height:100%;overflow:hidden}
+  canvas{display:block}
+</style>
+<script src="https://cdn.jsdelivr.net/npm/p5@1.9.4/lib/p5.min.js"></script>
+</head>
+<body>
+<script>
+/* ============================================================
+   一台車的誕生 — pixel-sampling pipeline, faithful to the
+   "peonía en p5.js" architecture:
+   source layer (parametric subject in an offscreen buffer)
+   → per-frame loadPixels() sampling
+   → scene-based renderers: mosaic / pixel-art / LOADING /
+     dot-matrix+glitch / ASCII / fine mosaic finale
+============================================================ */
+
+const SW=120, SH=140;          // source buffer (low-res, like the original)
+const DUR=30;                  // seconds, hard-cut scene loop
+let src, S, OX, OY;            // buffer, display scale, centering offsets
+let tOffset=0, freezeT=null;
+
+const clampv=(v,a,b)=>Math.max(a,Math.min(b,v));
+const ramp=(t,a,b)=>clampv((t-a)/(b-a),0,1);
+const ez=t=>t<.5?2*t*t:1-Math.pow(-2*t+2,2)/2;
+const ezo=t=>1-Math.pow(1-t,3);
+const hash=(x,y)=>{let h=Math.sin(x*127.1+y*311.7)*43758.5453;return h-Math.floor(h);};
+
+/* scene rundown — hard cuts, exactly like the reference */
+const SCENES=[
+  {t0:0.0,  t1:6.5,  r:'mosaic'},   // chassis + engine assembly
+  {t0:6.5,  t1:13.0, r:'pixel'},    // on the lift: body shell + paint
+  {t0:13.0, t1:15.0, r:'loading'},  // fake interstitial
+  {t0:15.0, t1:21.5, r:'dots'},     // wheels mount, glitch scanlines
+  {t0:21.5, t1:28.0, r:'ascii'},    // finished car, lights, turntable
+  {t0:28.0, t1:30.0, r:'mosaic2'}   // drive off, fine grid
+];
+
+function setup(){
+  createCanvas(windowWidth,windowHeight);
+  pixelDensity(1);
+  src=createGraphics(SW,SH);
+  src.pixelDensity(1);
+  textFont('monospace');
+  fitStage();
+  window.__seek=s=>{freezeT=s;};
+  window.__play=()=>{freezeT=null;};
+}
+function windowResized(){resizeCanvas(windowWidth,windowHeight);fitStage();}
+function fitStage(){
+  S=Math.min(windowWidth/(SW*4),windowHeight/(SH*4))*4;
+  OX=(windowWidth-SW*S)/2; OY=(windowHeight-SH*S)/2;
+}
+
+/* ============================================================
+   SOURCE LAYER — parametric car, assembled over the timeline
+   car local space: faces +x, ground y=+24, half-width 46
+============================================================ */
+const CX=60, CY=72;
+const BODY=[[-46,10],[-46,2],[-40,-2],[-26,-4],[-17,-13],[6,-14],[18,-7],[40,-4],[46,1],[46,10]];
+const GLASS=[[-22,-5],[-15,-12],[4,-13],[13,-6]];
+
+function poly(g,pts){g.beginShape();for(const p of pts)g.vertex(p[0],p[1]);g.endShape(CLOSE);}
+
+function drawSource(T){
+  src.background(0);
+  src.noStroke();
+
+  /* ---- schedule ---- */
+  const railT  =ez(ramp(T,0.5,2.4));
+  const crossT =ramp(T,2.2,3.6);
+  const engT   =ez(ramp(T,3.6,5.0));
+  const cageT  =ez(ramp(T,5.4,6.4));
+  const liftUp =ez(ramp(T,6.6,7.6));
+  const shellT =ez(ramp(T,7.6,9.2));
+  const lineT  =ramp(T,9.2,10.0);
+  const paintT =ez(ramp(T,10.2,12.6));
+  const liftDn =ez(ramp(T,15.2,16.2));
+  const wRearT =ez(ramp(T,16.2,17.4));
+  const wFrontT=ez(ramp(T,17.2,18.2));
+  const dropT  =ramp(T,18.3,18.8);
+  const glassT =ez(ramp(T,19.2,20.6));
+  const lightT =ramp(T,23.0,23.6);
+  const driveT =ramp(T,28.2,30.0);
+
+  /* lift height (the "stem" composition of the original) */
+  const liftH=26*clampv(liftUp-liftDn,0,1);
+
+  /* car body vertical: on stands until wheels drop */
+  const standH=(T>15&&dropT<1)?6*(1-ezo(dropT)):(T<=15?0:0);
+  const bounce=(dropT>0&&dropT<1)?0:(T>18.8&&T<19.4?Math.sin((T-18.8)*18)*2*Math.exp(-(T-18.8)*6):0);
+  const bob=(T>21.5&&T<28)?Math.sin(T*2.2)*0.7:0;
+
+  /* drive off */
+  const driveX=driveT*driveT*150;
+  const rollSpd=(T>28?(T-28)*9:0);
+
+  /* conveyor floor */
+  src.fill(70);
+  const floorY=CY+24;
+  const scroll=(T*14)%12;
+  for(let x=-6;x<SW+12;x+=12)src.rect(x-scroll,floorY+2,7,1.6);
+  src.fill(45);src.rect(0,floorY+1,SW,0.8);
+
+  /* lift column + base (stem analogue) */
+  if(liftH>0.5){
+    const carBot=CY-liftH-standH+bounce+bob+12;
+    src.fill(90,100,110);
+    src.rect(CX-3,carBot,6,floorY-carBot+1);
+    src.fill(70,78,88);src.rect(CX-12,floorY-1,24,3);
+  }
+
+  src.push();
+  src.translate(CX+driveX, CY-liftH-standH+bounce+bob);
+
+  /* turntable: slight rock early, one full flip near the end */
+  let flip=1;
+  if(T<6.5) flip=1-0.10*Math.sin(T*0.9);
+  if(T>24&&T<27) flip=Math.cos((T-24)/3*Math.PI*2);
+  else if(T>=21.5) flip=1-0.06*Math.sin(T*0.7);
+  src.scale(flip,1);
+  const fsign=flip<0?-1:1;
+
+  /* ---- chassis rails ---- */
+  if(railT>0){
+    src.fill(125,135,145);
+    const off=(1-railT)*70;
+    src.rect(-44-off,6,88,3);
+    src.fill(105,115,125);
+    src.rect(-44+off,11,88,3);
+  }
+  /* crossmembers pop in */
+  [-30,-10,10,30].forEach((x,i)=>{
+    const lt=clampv(crossT*4-i,0,1);
+    if(lt>0){src.fill(150,158,168);const s2=ezo(lt);src.rect(x-2*s2,6,4*s2,8);}
+  });
+  /* engine drops at the front */
+  if(engT>0){
+    const ey=-2-(1-engT)*46;
+    src.fill(95,100,108);src.rect(20,ey,18,11,1);
+    src.fill(140,146,155);src.rect(23,ey-3,4,4);src.rect(30,ey-3,4,4);
+    src.fill(60);src.circle(25,ey+5,2.4);src.circle(33,ey+5,2.4);
+  }
+  /* cabin cage (steel outline before the shell) */
+  if(cageT>0&&shellT<1){
+    src.noFill();src.stroke(160,170,180,255*cageT*(1-shellT));src.strokeWeight(1.4);
+    poly(src,GLASS);src.noStroke();
+  }
+  /* ---- body shell: primer, then paint sweep ---- */
+  if(shellT>0){
+    const sy=(1-shellT)*-52;
+    src.push();src.translate(0,sy);
+    src.fill(135,140,146);          // primer grey
+    poly(src,BODY);
+    if(paintT>0){                    // crimson paint, left→right sweep
+      const ctx=src.drawingContext;
+      ctx.save();ctx.beginPath();
+      ctx.rect(-48,-20,8+paintT*96,34);ctx.clip();
+      src.fill(196,38,52);poly(src,BODY);
+      src.fill(226,80,90);src.rect(-44,-1,88,1.2); // highlight line
+      ctx.restore();
+      /* spray head */
+      if(paintT<1){
+        const px=-40+paintT*96;
+        src.fill(255,210,215,180);src.circle(px,-16,3);
+        for(let i=0;i<5;i++)src.circle(px+hash(i,T*9)*6-3,-12+hash(i+9,T*7)*8,1.2);
+      }
+    }
+    /* panel lines + handles */
+    if(lineT>0){
+      src.stroke(40,40,46,200*lineT);src.strokeWeight(1);
+      src.line(-13,-4,-13,9);src.line(9,-5,9,9);
+      src.line(-26,-4,-26,9);src.noStroke();
+      src.fill(50,50,56,255*lineT);src.rect(-10,0,4,1.4);src.rect(12,0,4,1.4);
+    }
+    /* glass */
+    if(glassT>0){src.fill(150,190,215,210*glassT);poly(src,GLASS);
+      src.fill(255,255,255,60*glassT);src.triangle(-14,-11,-6,-12,-18,-6);}
+    /* lights */
+    if(shellT>0.9){
+      src.fill(lightT>0?255:120,lightT>0?230:120,120,255);
+      src.rect(44,-2,3,3,1);
+      src.fill(lightT>0?230:110,40,40);src.rect(-47,-2,3,3,1);
+    }
+    if(lightT>0){ /* headlight beam */
+      src.fill(255,240,180,70);
+      src.triangle(47,-1,47+34,-8,47+34,8);
+    }
+    src.pop();
+  }
+  /* ---- wheels ---- */
+  const wheelDef=[[-30,wRearT],[30,wFrontT]];
+  for(const[wx,wt]of wheelDef){
+    if(wt<=0)continue;
+    const rx=wx-(1-wt)*95*fsign;
+    const wy=14+ (dropT<1&&T>15?0:0);
+    const ang=(rx*0.35+T*rollSpd)* (fsign);
+    src.push();src.translate(rx,wy);
+    src.fill(28,30,34);src.circle(0,0,20);
+    src.stroke(70,74,80);src.strokeWeight(1.5);src.noFill();src.circle(0,0,19);
+    src.noStroke();src.fill(165,170,178);src.circle(0,0,10);
+    src.stroke(60,64,70);src.strokeWeight(1.6);
+    for(let k=0;k<4;k++){const a=ang+k*Math.PI/2;src.line(0,0,Math.cos(a)*4.6,Math.sin(a)*4.6);}
+    src.noStroke();src.fill(40);src.circle(0,0,2.6);
+    src.pop();
+  }
+  src.pop();
+
+  /* ---- sparks (welding / mounting) ---- */
+  function sparks(x,y,n){
+    for(let i=0;i<n;i++){
+      const a=hash(i,Math.floor(T*30))*6.28, r=hash(i+40,Math.floor(T*30))*7;
+      src.fill(255,220+hash(i,T)*35,120,230);
+      src.rect(x+Math.cos(a)*r,y+Math.sin(a)*r,1.3,1.3);
+    }
+    src.fill(255,250,230);src.circle(x,y,2.2);
+  }
+  if(T>2.2&&T<3.8) sparks(CX+(-30+((Math.floor(T*2.5)%4)*20)),CY+8,7);
+  if(T>4.6&&T<5.6) sparks(CX+26,CY+2,8);
+  if(T>5.6&&T<6.4) sparks(CX-18,CY-10,6);
+  if(T>17.0&&T<18.4) sparks(CX+(T<17.6?-30:30),CY+14-liftH*0,6);
+
+  /* exhaust puffs on drive-off */
+  if(driveT>0.05){
+    for(let i=0;i<4;i++){
+      const age=(T*1.3+i*0.27)%1;
+      src.fill(150,150,155,120*(1-age));
+      src.circle(CX+driveX-50-age*16,CY+12-age*7,3+age*6);
+    }
+  }
+}
+
+/* ============================================================
+   RENDERERS — sample src.pixels, redraw per cell
+============================================================ */
+function px(i){return[src.pixels[i],src.pixels[i+1],src.pixels[i+2]];}
+
+function renderMosaic(fine){
+  src.loadPixels();
+  const c=fine?1.5:2;
+  noStroke();
+  for(let y=0;y<SH;y+=c)for(let x=0;x<SW;x+=c){
+    const i=4*((y|0)*SW+(x|0));
+    const[r,g,b]=px(i);
+    if(r+g+b<26)continue;
+    const X=OX+x*S,Y=OY+y*S,D=c*S;
+    stroke(r*.42,g*.42,b*.42);strokeWeight(1);
+    fill(r,g,b);
+    rect(X,Y,D-0.5,D-0.5);
+    const bri=(r+g+b)/3;
+    if(bri>185&&hash(x,y)>0.86){      // bright outlined tiles, as in the reference
+      noFill();stroke(255,235,235,220);rect(X+2,Y+2,D-4,D-4);
+    }
+  }
+  noStroke();
+}
+
+function renderPixel(){
+  src.loadPixels();
+  const c=2,q=v=>Math.min(255,Math.round(v/52)*52);
+  noStroke();
+  for(let y=0;y<SH;y+=c)for(let x=0;x<SW;x+=c){
+    const i=4*(y*SW+x);
+    const[r,g,b]=px(i);
+    if(r+g+b<26)continue;
+    fill(q(r),q(g),q(b));
+    rect(OX+x*S,OY+y*S,c*S,c*S);
+  }
+}
+
+function renderDots(T){
+  src.loadPixels();
+  const c=2;
+  /* glitch row offsets, re-rolled a few times per second */
+  const seed=Math.floor(T*8);
+  const bands=[];
+  for(let k=0;k<3;k++){
+    if(hash(k+1,seed)>0.45)
+      bands.push({y0:Math.floor(hash(k+7,seed)*SH),h:2+Math.floor(hash(k+13,seed)*8),
+                  dx:(hash(k+23,seed)-0.5)*26});
+  }
+  noStroke();
+  for(let y=0;y<SH;y+=c){
+    let gx=0;
+    for(const b of bands)if(y>=b.y0&&y<b.y0+b.h)gx=b.dx;
+    for(let x=0;x<SW;x+=c){
+      const i=4*(y*SW+x);
+      const[r,g,b]=px(i);
+      const bri=(r+g+b)/3;
+      if(bri<10)continue;
+      const d=map(bri,10,255,1,c*S*0.95,true);
+      fill(lerp(120,255,bri/255),lerp(70,235,bri/255),lerp(85,240,bri/255),235);
+      circle(OX+x*S+gx*S*0.5+c*S/2,OY+y*S+c*S/2,d);
+    }
+  }
+  /* occasional bright scanline */
+  if(hash(9,seed)>0.7){
+    const ly=OY+hash(3,seed)*SH*S;
+    fill(255,200,200,90);rect(OX,ly,SW*S,1.5);
+  }
+}
+
+const RAMP="  .,:;i+*xeEHKX$%@#";
+const FLICK="XESHK$&@WZ";
+function renderAscii(T){
+  src.loadPixels();
+  const c=3;
+  textAlign(CENTER,CENTER);textSize(c*S+1);
+  for(let y=0;y<SH;y+=c)for(let x=0;x<SW;x+=c){
+    const i=4*(y*SW+x);
+    const[r,g,b]=px(i);
+    const bri=(r+g+b)/3;
+    if(bri<9)continue;
+    let ch;
+    if(bri>200&&hash(x*3,y*7+Math.floor(T*6))>0.8)
+      ch=FLICK[Math.floor(hash(x,y+Math.floor(T*6))*FLICK.length)];
+    else ch=RAMP[Math.floor(map(bri,9,255,2,RAMP.length-1,true))];
+    fill(Math.min(255,r*1.25+30),Math.min(255,g*1.15+25),Math.min(255,b*1.2+30));
+    text(ch,OX+x*S+c*S/2,OY+y*S+c*S/2);
+  }
+}
+
+function renderLoading(T,t0,t1){
+  const p=ramp(T,t0,t1-0.25);
+  /* sparse dim dots */
+  const seed=Math.floor(T*5);
+  noStroke();
+  for(let k=0;k<26;k++){
+    fill(255,255,255,40+hash(k,seed)*70);
+    rect(OX+hash(k*3,seed)*SW*S,OY+hash(k*7,seed+2)*SH*S,1.6,1.6);
+  }
+  textAlign(CENTER,CENTER);textSize(13);
+  fill(225);
+  const cx=OX+SW*S/2, cy=OY+SH*S/2;
+  text("L O A D I N G",cx,cy-6);
+  fill(180,40,46);
+  rect(cx-52,cy+12,104*p,1.6);
+  fill(120);textSize(8);
+  text(Math.floor(p*100)+"%  ·  ENSAMBLAJE",cx,cy+26);
+}
+
+/* ============================================================ */
+function draw(){
+  background(0);
+  const T=freezeT!==null?freezeT:((millis()/1000)+tOffset)%DUR;
+  const sc=SCENES.find(s=>T>=s.t0&&T<s.t1)||SCENES[0];
+
+  if(sc.r!=='loading')drawSource(T);
+
+  switch(sc.r){
+    case 'mosaic': renderMosaic(false);break;
+    case 'pixel':  renderPixel();break;
+    case 'loading':renderLoading(T,sc.t0,sc.t1);break;
+    case 'dots':   renderDots(T);break;
+    case 'ascii':  renderAscii(T);break;
+    case 'mosaic2':renderMosaic(true);break;
+  }
+
+  /* tiny corner slate, documentary style */
+  fill(120);noStroke();textAlign(LEFT,BASELINE);textSize(9);
+  text("fábrica de autos en p5.js — "+sc.r.toUpperCase(),OX+4,OY+SH*S-6);
+}
+</script>
+</body>
+</html>

@@ -14,18 +14,18 @@
 <body>
 <script>
 /* ============================================================
-   一台車的誕生 — pixel-sampling pipeline, faithful to the
-   "peonía en p5.js" architecture:
-   source layer (parametric subject in an offscreen buffer)
+   一台車的誕生 v2 — faithful to the "peonía en p5.js" pipeline:
+   shaded parametric subject in an offscreen buffer
    → per-frame loadPixels() sampling
-   → scene-based renderers: mosaic / pixel-art / LOADING /
-     dot-matrix+glitch / ASCII / fine mosaic finale
+   → renderer track decoupled from the build story,
+     hard-cutting every ~2s between mosaic / dots / pixel / ASCII,
+     with LOADING as the loop seam at the start.
 ============================================================ */
 
-const SW=120, SH=140;          // source buffer (low-res, like the original)
-const DUR=30;                  // seconds, hard-cut scene loop
-let src, S, OX, OY;            // buffer, display scale, centering offsets
-let tOffset=0, freezeT=null;
+const SW=120, SH=140;
+const DUR=30;
+let src, S, OX, OY;
+let freezeT=null;
 
 const clampv=(v,a,b)=>Math.max(a,Math.min(b,v));
 const ramp=(t,a,b)=>clampv((t-a)/(b-a),0,1);
@@ -33,14 +33,23 @@ const ez=t=>t<.5?2*t*t:1-Math.pow(-2*t+2,2)/2;
 const ezo=t=>1-Math.pow(1-t,3);
 const hash=(x,y)=>{let h=Math.sin(x*127.1+y*311.7)*43758.5453;return h-Math.floor(h);};
 
-/* scene rundown — hard cuts, exactly like the reference */
-const SCENES=[
-  {t0:0.0,  t1:6.5,  r:'mosaic'},   // chassis + engine assembly
-  {t0:6.5,  t1:13.0, r:'pixel'},    // on the lift: body shell + paint
-  {t0:13.0, t1:15.0, r:'loading'},  // fake interstitial
-  {t0:15.0, t1:21.5, r:'dots'},     // wheels mount, glitch scanlines
-  {t0:21.5, t1:28.0, r:'ascii'},    // finished car, lights, turntable
-  {t0:28.0, t1:30.0, r:'mosaic2'}   // drive off, fine grid
+/* renderer track — fast hard cuts, separate from the build story */
+const RCUTS=[
+  {t:0.0, r:'loading'},
+  {t:1.8, r:'mosaic'},
+  {t:4.4, r:'dots'},
+  {t:6.4, r:'pixel'},
+  {t:8.8, r:'mosaic'},
+  {t:10.8,r:'ascii'},
+  {t:13.0,r:'pixel'},
+  {t:15.2,r:'dots'},
+  {t:17.4,r:'mosaic'},
+  {t:19.2,r:'ascii'},
+  {t:21.6,r:'pixel'},
+  {t:23.4,r:'dots'},
+  {t:25.4,r:'ascii'},
+  {t:27.8,r:'mosaic2'},
+  {t:30.01,r:'end'}
 ];
 
 function setup(){
@@ -60,160 +69,248 @@ function fitStage(){
 }
 
 /* ============================================================
-   SOURCE LAYER — parametric car, assembled over the timeline
-   car local space: faces +x, ground y=+24, half-width 46
+   SOURCE LAYER — shaded parametric car
 ============================================================ */
 const CX=60, CY=72;
 const BODY=[[-46,10],[-46,2],[-40,-2],[-26,-4],[-17,-13],[6,-14],[18,-7],[40,-4],[46,1],[46,10]];
 const GLASS=[[-22,-5],[-15,-12],[4,-13],[13,-6]];
 
-function poly(g,pts){g.beginShape();for(const p of pts)g.vertex(p[0],p[1]);g.endShape(CLOSE);}
+function pathOf(ctx,pts){
+  ctx.beginPath();ctx.moveTo(pts[0][0],pts[0][1]);
+  for(let i=1;i<pts.length;i++)ctx.lineTo(pts[i][0],pts[i][1]);
+  ctx.closePath();
+}
+function gradV(ctx,y0,y1,stops){
+  const g=ctx.createLinearGradient(0,y0,0,y1);
+  for(const[o,c]of stops)g.addColorStop(o,c);
+  return g;
+}
 
 function drawSource(T){
   src.background(0);
   src.noStroke();
+  const ctx=src.drawingContext;
 
-  /* ---- schedule ---- */
-  const railT  =ez(ramp(T,0.5,2.4));
-  const crossT =ramp(T,2.2,3.6);
-  const engT   =ez(ramp(T,3.6,5.0));
-  const cageT  =ez(ramp(T,5.4,6.4));
-  const liftUp =ez(ramp(T,6.6,7.6));
-  const shellT =ez(ramp(T,7.6,9.2));
-  const lineT  =ramp(T,9.2,10.0);
-  const paintT =ez(ramp(T,10.2,12.6));
-  const liftDn =ez(ramp(T,15.2,16.2));
-  const wRearT =ez(ramp(T,16.2,17.4));
-  const wFrontT=ez(ramp(T,17.2,18.2));
-  const dropT  =ramp(T,18.3,18.8);
-  const glassT =ez(ramp(T,19.2,20.6));
-  const lightT =ramp(T,23.0,23.6);
-  const driveT =ramp(T,28.2,30.0);
+  /* ---- build schedule (story track) ---- */
+  const railT  =ez(ramp(T,2.0,3.6));
+  const crossT =ramp(T,3.4,4.6);
+  const engT   =ez(ramp(T,4.8,6.0));
+  const cageT  =ez(ramp(T,6.2,7.0));
+  const liftUp =ez(ramp(T,7.2,8.0));
+  const shellT =ez(ramp(T,8.2,9.8));
+  const lineT  =ramp(T,9.8,10.6);
+  const paintT =ez(ramp(T,10.8,13.4));
+  const liftDn =ez(ramp(T,13.8,14.6));
+  const wRearT =ez(ramp(T,14.8,15.8));
+  const wFrontT=ez(ramp(T,15.6,16.6));
+  const dropT  =ramp(T,16.8,17.3);
+  const glassT =ez(ramp(T,18.2,19.4));
+  const lightT =ramp(T,20.2,20.8);
+  const driveT =ramp(T,28.0,30.0);
 
-  /* lift height (the "stem" composition of the original) */
-  const liftH=26*clampv(liftUp-liftDn,0,1);
-
-  /* car body vertical: on stands until wheels drop */
-  const standH=(T>15&&dropT<1)?6*(1-ezo(dropT)):(T<=15?0:0);
-  const bounce=(dropT>0&&dropT<1)?0:(T>18.8&&T<19.4?Math.sin((T-18.8)*18)*2*Math.exp(-(T-18.8)*6):0);
-  const bob=(T>21.5&&T<28)?Math.sin(T*2.2)*0.7:0;
-
-  /* drive off */
+  /* raise: lift 26px → jack stands 6px → drop to wheels */
+  const R=(1-liftDn)*26*liftUp + liftDn*6*(1-ezo(dropT));
+  const bounce=(T>17.3&&T<18.2)?Math.sin((T-17.3)*22)*2.2*Math.exp(-(T-17.3)*5.5):0;
+  const bob=(T>20&&T<27.8)?Math.sin(T*2.1)*0.7:0;
+  const carY=CY-R+bounce+bob;
   const driveX=driveT*driveT*150;
   const rollSpd=(T>28?(T-28)*9:0);
 
   /* conveyor floor */
-  src.fill(70);
   const floorY=CY+24;
+  src.fill(72);
   const scroll=(T*14)%12;
   for(let x=-6;x<SW+12;x+=12)src.rect(x-scroll,floorY+2,7,1.6);
-  src.fill(45);src.rect(0,floorY+1,SW,0.8);
+  src.fill(46);src.rect(0,floorY+1,SW,0.8);
 
-  /* lift column + base (stem analogue) */
-  if(liftH>0.5){
-    const carBot=CY-liftH-standH+bounce+bob+12;
-    src.fill(90,100,110);
-    src.rect(CX-3,carBot,6,floorY-carBot+1);
+  /* ground shadow — sells the depth */
+  if(railT>0){
+    const sw=clampv(1-R*0.018,0.4,1);
+    for(const[w,h,a]of[[96,7,42],[74,5,34],[52,3.5,30]]){
+      src.fill(0,0,0,0);ctx.save();
+      ctx.fillStyle=`rgba(0,0,0,${a/100*sw})`;
+      ctx.beginPath();ctx.ellipse(CX+driveX,floorY+1,w*sw/2,h/2,0,0,7);ctx.fill();ctx.restore();
+    }
+    /* faint floor reflection blob */
+    ctx.save();ctx.fillStyle='rgba(120,40,50,'+(paintT*0.10)+')';
+    ctx.beginPath();ctx.ellipse(CX+driveX,floorY+3,40,2.4,0,0,7);ctx.fill();ctx.restore();
+  }
+
+  /* lift column + base */
+  const liftPhase=clampv(liftUp-liftDn,0,1);
+  if(liftPhase>0.15){
+    const carBot=carY+12;
+    ctx.save();
+    ctx.fillStyle=gradV(ctx,carBot,floorY,[[0,'#8d9aa8'],[1,'#525a64']]);
+    ctx.fillRect(CX-3,carBot,6,floorY-carBot+1);
+    ctx.restore();
     src.fill(70,78,88);src.rect(CX-12,floorY-1,24,3);
+  }
+  /* jack stands while waiting for wheels */
+  if(liftDn>0.9&&dropT<1){
+    const sh=6*(1-ezo(dropT));
+    src.fill(180,120,40);
+    src.triangle(CX-20-4,floorY,CX-20+4,floorY,CX-20,floorY-sh-4);
+    src.triangle(CX+20-4,floorY,CX+20+4,floorY,CX+20,floorY-sh-4);
   }
 
   src.push();
-  src.translate(CX+driveX, CY-liftH-standH+bounce+bob);
+  src.translate(CX+driveX,carY);
 
-  /* turntable: slight rock early, one full flip near the end */
-  let flip=1;
-  if(T<6.5) flip=1-0.10*Math.sin(T*0.9);
-  if(T>24&&T<27) flip=Math.cos((T-24)/3*Math.PI*2);
-  else if(T>=21.5) flip=1-0.06*Math.sin(T*0.7);
+  /* turntable: rock early, one full flip mid-showcase */
+  let flip;
+  if(T>22&&T<24.5){const f=Math.cos((T-22)/2.5*Math.PI*2);flip=(f<0?-1:1)*Math.max(Math.abs(f),0.16);}
+  else if(T<7) flip=1-0.10*Math.sin(T*0.9);
+  else flip=1-0.07*Math.sin(T*0.55+1.2);
   src.scale(flip,1);
   const fsign=flip<0?-1:1;
 
-  /* ---- chassis rails ---- */
+  /* ---- chassis rails (steel, two-tone) ---- */
   if(railT>0){
-    src.fill(125,135,145);
     const off=(1-railT)*70;
-    src.rect(-44-off,6,88,3);
-    src.fill(105,115,125);
-    src.rect(-44+off,11,88,3);
+    ctx.save();
+    ctx.fillStyle=gradV(ctx,5,10,[[0,'#aeb8c2'],[1,'#6e7882']]);
+    ctx.fillRect(-44-off,6,88,3);
+    ctx.fillStyle=gradV(ctx,10,15,[[0,'#8c96a0'],[1,'#545c66']]);
+    ctx.fillRect(-44+off,11,88,3);
+    ctx.restore();
   }
-  /* crossmembers pop in */
   [-30,-10,10,30].forEach((x,i)=>{
     const lt=clampv(crossT*4-i,0,1);
-    if(lt>0){src.fill(150,158,168);const s2=ezo(lt);src.rect(x-2*s2,6,4*s2,8);}
+    if(lt>0){const s2=ezo(lt);
+      ctx.save();ctx.fillStyle=gradV(ctx,6,14,[[0,'#c2ccd6'],[1,'#707a84']]);
+      ctx.fillRect(x-2*s2,6,4*s2,8);ctx.restore();}
   });
-  /* engine drops at the front */
+  /* engine */
   if(engT>0){
     const ey=-2-(1-engT)*46;
-    src.fill(95,100,108);src.rect(20,ey,18,11,1);
-    src.fill(140,146,155);src.rect(23,ey-3,4,4);src.rect(30,ey-3,4,4);
-    src.fill(60);src.circle(25,ey+5,2.4);src.circle(33,ey+5,2.4);
+    ctx.save();
+    ctx.fillStyle=gradV(ctx,ey,ey+11,[[0,'#b0b6be'],[.5,'#7d838c'],[1,'#4e545c']]);
+    ctx.fillRect(20,ey,18,11);
+    ctx.restore();
+    src.fill(150,156,165);src.rect(23,ey-3,4,4);src.rect(30,ey-3,4,4);
+    src.fill(48);src.circle(25,ey+5,2.4);src.circle(33,ey+5,2.4);
+    src.fill(230,235,240,90);src.rect(21,ey+1,16,1.2);
   }
-  /* cabin cage (steel outline before the shell) */
+  /* cabin cage */
   if(cageT>0&&shellT<1){
-    src.noFill();src.stroke(160,170,180,255*cageT*(1-shellT));src.strokeWeight(1.4);
-    poly(src,GLASS);src.noStroke();
+    src.noFill();src.stroke(170,180,190,255*cageT*(1-shellT));src.strokeWeight(1.4);
+    src.beginShape();for(const p of GLASS)src.vertex(p[0],p[1]);src.endShape(CLOSE);
+    src.noStroke();
   }
-  /* ---- body shell: primer, then paint sweep ---- */
+
+  /* ---- body shell with full shading ---- */
   if(shellT>0){
     const sy=(1-shellT)*-52;
     src.push();src.translate(0,sy);
-    src.fill(135,140,146);          // primer grey
-    poly(src,BODY);
-    if(paintT>0){                    // crimson paint, left→right sweep
-      const ctx=src.drawingContext;
-      ctx.save();ctx.beginPath();
-      ctx.rect(-48,-20,8+paintT*96,34);ctx.clip();
-      src.fill(196,38,52);poly(src,BODY);
-      src.fill(226,80,90);src.rect(-44,-1,88,1.2); // highlight line
+    ctx.save();
+
+    /* primer coat, vertical gradient */
+    pathOf(ctx,BODY);
+    ctx.fillStyle=gradV(ctx,-15,11,[[0,'#f0f3f7'],[.45,'#b6bcc4'],[1,'#6a7078']]);
+    ctx.fill();
+
+    /* crimson paint sweep, its own gradient */
+    if(paintT>0){
+      ctx.save();
+      ctx.beginPath();ctx.rect(-48,-20,9+paintT*97,34);ctx.clip();
+      pathOf(ctx,BODY);
+      ctx.fillStyle=gradV(ctx,-15,11,[[0,'#ff9aa0'],[.35,'#ea4855'],[.7,'#b22432'],[1,'#66101a']]);
+      ctx.fill();
       ctx.restore();
-      /* spray head */
-      if(paintT<1){
-        const px=-40+paintT*96;
-        src.fill(255,210,215,180);src.circle(px,-16,3);
-        for(let i=0;i<5;i++)src.circle(px+hash(i,T*9)*6-3,-12+hash(i+9,T*7)*8,1.2);
-      }
+    }
+
+    /* unified lighting inside body silhouette */
+    pathOf(ctx,BODY);ctx.clip();
+    /* underbody occlusion */
+    ctx.fillStyle='rgba(5,2,10,0.38)';ctx.fillRect(-47,5,94,7);
+    /* shoulder highlight band */
+    ctx.fillStyle='rgba(255,250,245,0.32)';ctx.fillRect(-47,-2.2,94,1.6);
+    /* roof rim light */
+    ctx.fillStyle='rgba(255,255,255,0.5)';ctx.fillRect(-18,-14.6,25,1.3);
+    /* mottled tonal blobs — the organic gradient the petals had */
+    for(let i=0;i<7;i++){
+      const bx=-40+hash(i,3)*84, by=-12+hash(i,11)*20;
+      const bw=10+hash(i,7)*16, bh=4+hash(i,17)*6;
+      ctx.fillStyle=hash(i,23)>0.6?'rgba(255,235,230,0.10)':'rgba(20,5,25,0.13)';
+      ctx.beginPath();ctx.ellipse(bx,by,bw/2,bh/2,hash(i,5)-0.5,0,7);ctx.fill();
+    }
+    /* hood specular */
+    ctx.fillStyle='rgba(255,255,255,0.5)';
+    ctx.beginPath();ctx.ellipse(29,-4.6,7,1.1,-0.12,0,7);ctx.fill();
+    /* front fade (form turning away) */
+    const fg=ctx.createLinearGradient(34,0,47,0);
+    fg.addColorStop(0,'rgba(0,0,15,0)');fg.addColorStop(1,'rgba(0,0,15,0.30)');
+    ctx.fillStyle=fg;ctx.fillRect(34,-20,13,32);
+    const rg=ctx.createLinearGradient(-38,0,-47,0);
+    rg.addColorStop(0,'rgba(0,0,15,0)');rg.addColorStop(1,'rgba(0,0,15,0.34)');
+    ctx.fillStyle=rg;ctx.fillRect(-47,-20,9,32);
+    ctx.restore();
+
+    /* spray head while painting */
+    if(paintT>0&&paintT<1){
+      const px=-39+paintT*97;
+      src.fill(255,215,220,190);src.circle(px,-17,3);
+      for(let i=0;i<6;i++)src.circle(px+hash(i,T*9)*7-3.5,-13+hash(i+9,T*7)*9,1.2);
     }
     /* panel lines + handles */
     if(lineT>0){
-      src.stroke(40,40,46,200*lineT);src.strokeWeight(1);
-      src.line(-13,-4,-13,9);src.line(9,-5,9,9);
-      src.line(-26,-4,-26,9);src.noStroke();
-      src.fill(50,50,56,255*lineT);src.rect(-10,0,4,1.4);src.rect(12,0,4,1.4);
+      src.stroke(30,28,36,210*lineT);src.strokeWeight(1);
+      src.line(-13,-4,-13,9);src.line(9,-5,9,9);src.line(-26,-4,-26,9);
+      src.noStroke();
+      src.fill(40,36,44,255*lineT);src.rect(-10,0,4,1.4);src.rect(12,0,4,1.4);
     }
-    /* glass */
-    if(glassT>0){src.fill(150,190,215,210*glassT);poly(src,GLASS);
-      src.fill(255,255,255,60*glassT);src.triangle(-14,-11,-6,-12,-18,-6);}
+    /* glass with sky gradient + streak */
+    if(glassT>0){
+      ctx.save();ctx.globalAlpha=glassT;
+      pathOf(ctx,GLASS);
+      ctx.fillStyle=gradV(ctx,-13,-5,[[0,'#dff0fb'],[.5,'#8fb4cc'],[1,'#46647c']]);
+      ctx.fill();
+      pathOf(ctx,GLASS);ctx.clip();
+      ctx.fillStyle='rgba(255,255,255,0.45)';
+      ctx.beginPath();ctx.moveTo(-16,-13);ctx.lineTo(-10,-13);ctx.lineTo(-20,-5);ctx.lineTo(-24,-5);ctx.closePath();ctx.fill();
+      ctx.restore();
+      src.stroke(30,30,40,160*glassT);src.strokeWeight(0.8);src.noFill();
+      src.line(-5,-13,-5,-5);src.noStroke();
+    }
     /* lights */
     if(shellT>0.9){
-      src.fill(lightT>0?255:120,lightT>0?230:120,120,255);
-      src.rect(44,-2,3,3,1);
-      src.fill(lightT>0?230:110,40,40);src.rect(-47,-2,3,3,1);
+      src.fill(lightT>0?255:175,lightT>0?240:175,140);src.rect(44,-2,3,3,1);
+      src.fill(lightT>0?235:120,40,45);src.rect(-47,-2,3,3,1);
     }
-    if(lightT>0){ /* headlight beam */
-      src.fill(255,240,180,70);
-      src.triangle(47,-1,47+34,-8,47+34,8);
+    if(lightT>0){
+      ctx.save();
+      const bg2=ctx.createLinearGradient(47,0,82,0);
+      bg2.addColorStop(0,'rgba(255,240,180,0.34)');bg2.addColorStop(1,'rgba(255,240,180,0)');
+      ctx.fillStyle=bg2;
+      ctx.beginPath();ctx.moveTo(47,-1);ctx.lineTo(82,-9);ctx.lineTo(82,9);ctx.closePath();ctx.fill();
+      ctx.restore();
     }
     src.pop();
   }
-  /* ---- wheels ---- */
-  const wheelDef=[[-30,wRearT],[30,wFrontT]];
-  for(const[wx,wt]of wheelDef){
+
+  /* ---- wheels: radial-shaded tires ---- */
+  for(const[wx,wt]of[[-30,wRearT],[30,wFrontT]]){
     if(wt<=0)continue;
-    const rx=wx-(1-wt)*95*fsign;
-    const wy=14+ (dropT<1&&T>15?0:0);
-    const ang=(rx*0.35+T*rollSpd)* (fsign);
-    src.push();src.translate(rx,wy);
-    src.fill(28,30,34);src.circle(0,0,20);
-    src.stroke(70,74,80);src.strokeWeight(1.5);src.noFill();src.circle(0,0,19);
-    src.noStroke();src.fill(165,170,178);src.circle(0,0,10);
-    src.stroke(60,64,70);src.strokeWeight(1.6);
-    for(let k=0;k<4;k++){const a=ang+k*Math.PI/2;src.line(0,0,Math.cos(a)*4.6,Math.sin(a)*4.6);}
-    src.noStroke();src.fill(40);src.circle(0,0,2.6);
+    const rx=wx-(1-wt)*95;
+    const ang=(rx*0.35+T*rollSpd)*fsign;
+    src.push();src.translate(rx,14);
+    ctx.save();
+    const tg=ctx.createRadialGradient(-2,-3,1,0,0,11);
+    tg.addColorStop(0,'#3e434c');tg.addColorStop(.55,'#1b1d23');tg.addColorStop(1,'#0c0d11');
+    ctx.fillStyle=tg;ctx.beginPath();ctx.arc(0,0,10,0,7);ctx.fill();
+    const hg=ctx.createRadialGradient(-1.5,-1.5,0.5,0,0,5.5);
+    hg.addColorStop(0,'#e8ecf2');hg.addColorStop(.7,'#9aa2ac');hg.addColorStop(1,'#5e646e');
+    ctx.fillStyle=hg;ctx.beginPath();ctx.arc(0,0,5,0,7);ctx.fill();
+    ctx.restore();
+    src.stroke(60,64,72);src.strokeWeight(1.5);
+    for(let k=0;k<4;k++){const a=ang+k*Math.PI/2;src.line(0,0,Math.cos(a)*4.4,Math.sin(a)*4.4);}
+    src.noStroke();src.fill(40,42,48);src.circle(0,0,2.6);
     src.pop();
   }
   src.pop();
 
-  /* ---- sparks (welding / mounting) ---- */
+  /* ---- sparks ---- */
   function sparks(x,y,n){
     for(let i=0;i<n;i++){
       const a=hash(i,Math.floor(T*30))*6.28, r=hash(i+40,Math.floor(T*30))*7;
@@ -222,12 +319,12 @@ function drawSource(T){
     }
     src.fill(255,250,230);src.circle(x,y,2.2);
   }
-  if(T>2.2&&T<3.8) sparks(CX+(-30+((Math.floor(T*2.5)%4)*20)),CY+8,7);
-  if(T>4.6&&T<5.6) sparks(CX+26,CY+2,8);
-  if(T>5.6&&T<6.4) sparks(CX-18,CY-10,6);
-  if(T>17.0&&T<18.4) sparks(CX+(T<17.6?-30:30),CY+14-liftH*0,6);
+  if(T>3.4&&T<4.7) sparks(CX+(-30+((Math.floor(T*2.5)%4)*20)),CY+8,7);
+  if(T>5.4&&T<6.1) sparks(CX+26,CY+2,8);
+  if(T>6.3&&T<7.0) sparks(CX-18,CY-10,6);
+  if(T>15.0&&T<16.5) sparks(CX+(T<15.8?-30:30),carY+14,6);
 
-  /* exhaust puffs on drive-off */
+  /* exhaust on drive-off */
   if(driveT>0.05){
     for(let i=0;i<4;i++){
       const age=(T*1.3+i*0.27)%1;
@@ -238,13 +335,13 @@ function drawSource(T){
 }
 
 /* ============================================================
-   RENDERERS — sample src.pixels, redraw per cell
+   RENDERERS — per-cut grid size varies, so texture keeps changing
 ============================================================ */
 function px(i){return[src.pixels[i],src.pixels[i+1],src.pixels[i+2]];}
 
-function renderMosaic(fine){
+function renderMosaic(cut,fine){
   src.loadPixels();
-  const c=fine?1.5:2;
+  const c=fine?1.5:[2,3,2,2.5][cut%4];
   noStroke();
   for(let y=0;y<SH;y+=c)for(let x=0;x<SW;x+=c){
     const i=4*((y|0)*SW+(x|0));
@@ -255,16 +352,16 @@ function renderMosaic(fine){
     fill(r,g,b);
     rect(X,Y,D-0.5,D-0.5);
     const bri=(r+g+b)/3;
-    if(bri>185&&hash(x,y)>0.86){      // bright outlined tiles, as in the reference
+    if(bri>185&&hash(x,y)>0.86){
       noFill();stroke(255,235,235,220);rect(X+2,Y+2,D-4,D-4);
     }
   }
   noStroke();
 }
 
-function renderPixel(){
+function renderPixel(cut){
   src.loadPixels();
-  const c=2,q=v=>Math.min(255,Math.round(v/52)*52);
+  const c=[2,4,3][cut%3], q=v=>Math.min(255,Math.round(v/52)*52);
   noStroke();
   for(let y=0;y<SH;y+=c)for(let x=0;x<SW;x+=c){
     const i=4*(y*SW+x);
@@ -275,10 +372,9 @@ function renderPixel(){
   }
 }
 
-function renderDots(T){
+function renderDots(T,cut){
   src.loadPixels();
-  const c=2;
-  /* glitch row offsets, re-rolled a few times per second */
+  const c=[2,3][cut%2];
   const seed=Math.floor(T*8);
   const bands=[];
   for(let k=0;k<3;k++){
@@ -300,27 +396,25 @@ function renderDots(T){
       circle(OX+x*S+gx*S*0.5+c*S/2,OY+y*S+c*S/2,d);
     }
   }
-  /* occasional bright scanline */
   if(hash(9,seed)>0.7){
-    const ly=OY+hash(3,seed)*SH*S;
-    fill(255,200,200,90);rect(OX,ly,SW*S,1.5);
+    fill(255,200,200,90);rect(OX,OY+hash(3,seed)*SH*S,SW*S,1.5);
   }
 }
 
 const RAMP="  .,:;i+*xeEHKX$%@#";
 const FLICK="XESHK$&@WZ";
-function renderAscii(T){
+function renderAscii(T,cut){
   src.loadPixels();
-  const c=3;
+  const c=[3,4,2.5][cut%3];
   textAlign(CENTER,CENTER);textSize(c*S+1);
   for(let y=0;y<SH;y+=c)for(let x=0;x<SW;x+=c){
-    const i=4*(y*SW+x);
+    const i=4*((y|0)*SW+(x|0));
     const[r,g,b]=px(i);
     const bri=(r+g+b)/3;
     if(bri<9)continue;
     let ch;
-    if(bri>200&&hash(x*3,y*7+Math.floor(T*6))>0.8)
-      ch=FLICK[Math.floor(hash(x,y+Math.floor(T*6))*FLICK.length)];
+    if(bri>200&&hash((x|0)*3,(y|0)*7+Math.floor(T*6))>0.8)
+      ch=FLICK[Math.floor(hash(x|0,(y|0)+Math.floor(T*6))*FLICK.length)];
     else ch=RAMP[Math.floor(map(bri,9,255,2,RAMP.length-1,true))];
     fill(Math.min(255,r*1.25+30),Math.min(255,g*1.15+25),Math.min(255,b*1.2+30));
     text(ch,OX+x*S+c*S/2,OY+y*S+c*S/2);
@@ -328,8 +422,7 @@ function renderAscii(T){
 }
 
 function renderLoading(T,t0,t1){
-  const p=ramp(T,t0,t1-0.25);
-  /* sparse dim dots */
+  const p=ramp(T,t0,t1-0.2);
   const seed=Math.floor(T*5);
   noStroke();
   for(let k=0;k<26;k++){
@@ -349,21 +442,22 @@ function renderLoading(T,t0,t1){
 /* ============================================================ */
 function draw(){
   background(0);
-  const T=freezeT!==null?freezeT:((millis()/1000)+tOffset)%DUR;
-  const sc=SCENES.find(s=>T>=s.t0&&T<s.t1)||SCENES[0];
+  const T=freezeT!==null?freezeT:(millis()/1000)%DUR;
+  let cut=0;
+  for(let i=0;i<RCUTS.length-1;i++)if(T>=RCUTS[i].t&&T<RCUTS[i+1].t)cut=i;
+  const sc=RCUTS[cut];
 
   if(sc.r!=='loading')drawSource(T);
 
   switch(sc.r){
-    case 'mosaic': renderMosaic(false);break;
-    case 'pixel':  renderPixel();break;
-    case 'loading':renderLoading(T,sc.t0,sc.t1);break;
-    case 'dots':   renderDots(T);break;
-    case 'ascii':  renderAscii(T);break;
-    case 'mosaic2':renderMosaic(true);break;
+    case 'mosaic': renderMosaic(cut,false);break;
+    case 'pixel':  renderPixel(cut);break;
+    case 'loading':renderLoading(T,sc.t,RCUTS[cut+1].t);break;
+    case 'dots':   renderDots(T,cut);break;
+    case 'ascii':  renderAscii(T,cut);break;
+    case 'mosaic2':renderMosaic(cut,true);break;
   }
 
-  /* tiny corner slate, documentary style */
   fill(120);noStroke();textAlign(LEFT,BASELINE);textSize(9);
   text("fábrica de autos en p5.js — "+sc.r.toUpperCase(),OX+4,OY+SH*S-6);
 }
